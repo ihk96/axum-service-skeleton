@@ -1,0 +1,45 @@
+[package]
+# 복사한 뒤 여기 name과 아래 .env.example / README의 서비스 이름만 바꾸면 된다.
+name = "axum-service-skeleton"
+version = "0.1.0"
+edition = "2024"
+# bin이 여러 개일 때 `cargo run`이 어느 것을 실행할지 정해준다. bin을 추가하면
+# 이 값을 다시 확인할 것 — 지정이 없으면 `cargo run`이 그냥 실패한다.
+default-run = "server"
+
+[dependencies]
+axum = { version = "0.8", features = ["macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "time", "sync"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["trace"] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono", "migrate", "macros"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# 도메인 에러는 thiserror로 구체 타입(error.rs의 AppError), 최상위는 anyhow로
+# 뭉뚱그린다 — 기준은 "호출자가 에러 종류를 구분해야 하는가".
+thiserror = "2"
+anyhow = "1"
+
+# 포트를 `&dyn Trait`으로 쓰려면 async fn을 박싱해주는 이 매크로가 필요하다.
+# (Rust 2024의 async fn in trait은 dyn 호환이 아니다.)
+async-trait = "0.1"
+
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+dotenvy = "0.15"
+
+[dev-dependencies]
+http-body-util = "0.1"
+# 포트 trait에서 mock 구현을 컴파일 타임에 생성한다. DB 없이 테스트가 도는 근거.
+mockall = "0.13"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

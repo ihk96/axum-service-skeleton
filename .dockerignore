@@ -1,0 +1,19 @@
+# 빌드 컨텍스트(docker build가 데몬으로 통째로 전송하는 파일 집합)에서 제외할 것들.
+# target/은 수 GB까지 자라기 때문에, 이 파일이 없으면 이미지 빌드가 아니라 "컨텍스트
+# 전송"만으로 수십 초가 날아간다.
+target/
+.git/
+
+# .env에는 로컬 개발용 DATABASE_URL이 들어간다. COPY에 휩쓸려 이미지 레이어에 박히면
+# 이미지를 받은 누구나 꺼내볼 수 있다. 컨테이너 설정은 주입된 환경변수로 넣는다.
+.env
+
+# 이미지에 들어가야 할 이유가 없는 것들. 빼두면 이 파일들만 고쳤을 때 빌드 캐시가
+# 깨지지 않는다는 효과도 있다.
+Dockerfile
+.dockerignore
+docker-compose.yml
+README.md
+docs/
+.vscode/
+.idea/

@@ -1,0 +1,24 @@
+# 이미 빌드된 이미지로 컨테이너를 띄우는 예시. 이미지 만들기는 Dockerfile과 README가
+# 담당하고(`docker build -t my-service .`), 이 파일은 "그 이미지를 어떤 환경변수/네트워크로
+# 실행하는가"만 다룬다. 그대로 쓰기보다 배포 환경에 맞게 고쳐 쓰는 것을 전제로 한 가이드다.
+#
+# 개발 중에는 이 파일이 필요 없다 — DB만 띄우고(`docker compose up -d postgres`)
+# 서버는 `cargo run`으로 도는 게 훨씬 빠르다.
+services:
+  app:
+    # 로컬에서 구운 태그. 레지스트리를 쓰면 registry.example.com/my-service:0.1.0처럼
+    # 호스트를 포함한 태그로 바꾸면 compose가 없을 때 pull까지 해준다.
+    image: my-service:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # 컨테이너 안에서 DB 주소는 localhost가 아니라 서비스 이름(postgres)이다 —
+      # compose가 서비스 이름을 DNS로 풀어준다. DB가 compose 밖(관리형 DB, 기존
+      # 인스턴스)에 있으면 아래 postgres 서비스와 depends_on을 지우고 여기에
+      # 실제 호스트를 넣는다.
+      #
+      # 비밀값을 파일에 박지 않으려면 `DATABASE_URL: ${DATABASE_URL:?required}`처럼
+      # 두고 실행 환경에서 주입한다(값이 없으면 compose가 즉시 실패한다).
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/app
+      RUST_LOG: info
