@@ -21,7 +21,10 @@ tokio-util = "0.7"
 #   request-id  요청마다 식별자를 부여/전파 (로그 상관관계)
 #   timeout     핸들러가 끝나지 않는 요청을 끊는다
 #   catch-panic 핸들러 패닉을 500으로 바꾼다 (응답 없이 연결이 끊기지 않게)
-tower-http = { version = "0.6", features = ["trace", "request-id", "timeout", "catch-panic"] }
+#   cors        브라우저에서 직접 부를 때 필요. 기본은 꺼져 있고, routes/mod.rs의
+#               주석 처리된 블록을 살리면 켜진다 — feature만 미리 켜 둔 이유는
+#               "필요해졌을 때 한 곳만 고치면 되도록"이다.
+tower-http = { version = "0.6", features = ["trace", "request-id", "timeout", "catch-panic", "cors"] }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

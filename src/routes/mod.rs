@@ -76,12 +76,31 @@ pub fn build(state: Arc<AppState>, request_timeout: Duration) -> Router {
                 //    기록은 없는 상태가 된다. 이 레이어가 아예 없으면 패닉 시 응답 없이
                 //    연결만 끊겨서 클라이언트는 원인을 알 방법이 없다.
                 .layer(CatchPanicLayer::new())
-                // 4. 타임아웃은 핸들러 바로 위. 초과하면 408로 끊는다. store::pg_pool의
+                // 4. CORS는 기본적으로 꺼져 있다. 브라우저에서 이 API를 직접 호출하게 되면
+                //    (SPA가 다른 오리진에서 fetch하는 경우) 아래 블록을 살린다. 서버 간
+                //    호출이나 같은 오리진에서 프록시로 붙는 구성이라면 필요 없다 — CORS는
+                //    브라우저가 강제하는 규칙이지 서버를 보호하는 장치가 아니기 때문이다.
+                //
+                //    [주의] `CorsLayer::permissive()`를 기본값으로 두지 않았다. 그건 모든
+                //    오리진을 허용한다는 뜻이고, 한번 그렇게 열어두면 "동작하니까" 그대로
+                //    배포로 넘어가기 쉽다. 허용할 오리진을 명시하는 아래 형태에서 시작할 것.
+                //
+                //    쿠키나 Authorization 헤더를 실어 보내야 한다면 `.allow_credentials(true)`가
+                //    필요한데, 그 경우 브라우저가 와일드카드 오리진을 거부하므로 오리진을
+                //    반드시 열거해야 한다 — permissive로 시작하면 이 지점에서 막힌다.
+                //
+                // .layer(
+                //     tower_http::cors::CorsLayer::new()
+                //         .allow_origin("https://app.example.com".parse::<axum::http::HeaderValue>().unwrap())
+                //         .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
+                //         .allow_headers([axum::http::header::CONTENT_TYPE]),
+                // )
+                // 5. 타임아웃은 핸들러 바로 위. 초과하면 408로 끊는다. store::pg_pool의
                 //    DB 타임아웃(acquire/statement)이 막지 못하는 구간 — 외부 HTTP 호출이
                 //    응답하지 않는 경우 같은 — 을 여기서 막는다. 이것이 없으면 끝나지 않는
                 //    요청이 쌓이면서 커넥션과 태스크를 계속 점유한다.
                 .layer(TimeoutLayer::new(request_timeout))
-                // 5. 마지막으로 확정된 식별자를 응답 헤더로 돌려준다. 클라이언트가 문의할 때
+                // 6. 마지막으로 확정된 식별자를 응답 헤더로 돌려준다. 클라이언트가 문의할 때
                 //    이 값을 함께 주면 서버 로그에서 그 요청만 바로 집어낼 수 있다.
                 .layer(PropagateRequestIdLayer::new(
                     REQUEST_ID_HEADER.parse().unwrap(),

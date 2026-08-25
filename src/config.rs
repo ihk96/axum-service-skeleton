@@ -1,5 +1,7 @@
 use std::env;
 
+use anyhow::Context;
+
 // [아키텍처] 설정을 구조체 하나로 모아 기동 시점에 한 번만 환경변수를 읽고, 이후로는
 // 이 값을 전달해서 쓴다(12-factor 스타일) — 코드 곳곳에서 `env::var(...)`를 산발적으로
 // 부르지 않는다. bin이 이걸 읽어 server::run 등에 넘기므로, 환경변수를 아는 곳은
@@ -33,26 +35,82 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
-    // [설명] DATABASE_URL만 필수(없으면 `?`로 즉시 에러)이고 나머지는 기본값을 갖는다 —
-    // 로컬에서 환경변수 하나만 설정해도 바로 뜨게 하려는 의도.
+    // [설명] DATABASE_URL만 필수이고 나머지는 기본값을 갖는다 — 로컬에서 환경변수 하나만
+    // 설정해도 바로 뜨게 하려는 의도.
+    //
+    // [아키텍처] 설정 오류는 **기동 시점에 전부 드러난다**. 값이 없으면 기본값을 쓰지만,
+    // 값이 있는데 해석할 수 없으면 그 자리에서 에러다. 잘못된 설정으로 뜬 프로세스는
+    // 겉보기에 정상이라 한참 뒤에 엉뚱한 증상으로만 발견되므로, 아예 뜨지 않는 편이 낫다.
     pub fn from_env() -> anyhow::Result<Self> {
         Ok(Self {
             server_addr: env::var("SERVER_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string()),
-            database_url: env::var("DATABASE_URL")?,
-            request_timeout_secs: env_or("REQUEST_TIMEOUT_SECS", 30),
-            db_max_connections: env_or("DB_MAX_CONNECTIONS", 10),
-            db_acquire_timeout_secs: env_or("DB_ACQUIRE_TIMEOUT_SECS", 10),
-            db_statement_timeout_secs: env_or("DB_STATEMENT_TIMEOUT_SECS", 30),
-            shutdown_timeout_secs: env_or("SHUTDOWN_TIMEOUT_SECS", 10),
-            example_sweep_interval_secs: env_or("EXAMPLE_SWEEP_INTERVAL_SECS", 30),
+            // [설명] `?`만 쓰면 "environment variable not found"라고만 나와서 어느 변수인지
+            // 알 수 없다. 설정 실패 메시지는 운영자가 읽고 바로 고칠 수 있어야 한다.
+            database_url: env::var("DATABASE_URL")
+                .context("DATABASE_URL must be set (see .env.example)")?,
+            request_timeout_secs: env_or("REQUEST_TIMEOUT_SECS", 30)?,
+            db_max_connections: env_or("DB_MAX_CONNECTIONS", 10)?,
+            db_acquire_timeout_secs: env_or("DB_ACQUIRE_TIMEOUT_SECS", 10)?,
+            db_statement_timeout_secs: env_or("DB_STATEMENT_TIMEOUT_SECS", 30)?,
+            shutdown_timeout_secs: env_or("SHUTDOWN_TIMEOUT_SECS", 10)?,
+            example_sweep_interval_secs: env_or("EXAMPLE_SWEEP_INTERVAL_SECS", 30)?,
         })
     }
 }
 
 // [Rust 특징] 제네릭 + 트레잇 바운드(`T: FromStr`)로 "문자열에서 파싱 가능한 아무 타입"을
-// 한 헬퍼로 처리한다. 파싱 실패와 부재를 모두 `.ok()`로 뭉개고 기본값으로 폴백하는데,
-// 이는 "설정이 잘못돼도 조용히 기본값으로 뜬다"는 정책이다 — 오타를 즉시 드러내고 싶다면
-// 여기서 에러를 표면화하도록 바꿀 것.
-fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
-    env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+// 한 헬퍼로 처리한다.
+//
+// [설명] 환경변수 부재와 파싱 실패를 다르게 다루는 것이 요점이다. 없으면 기본값이지만,
+// 있는데 숫자가 아니면 에러다 — `DB_MAX_CONNECTIONS=1O`(0 대신 알파벳 O) 같은 오타가
+// 조용히 기본값으로 폴백하면, 설정을 바꿨다고 믿는 운영자와 실제로 도는 값이 어긋난 채
+// 아무도 모르는 상태가 된다. 그 어긋남은 부하가 오르고 나서야 증상으로 드러난다.
+fn env_or<T>(key: &str, default: T) -> anyhow::Result<T>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    match env::var(key) {
+        Ok(raw) => raw
+            .parse()
+            .map_err(|err| anyhow::anyhow!("{key}: {err} (got {raw:?})")),
+        Err(env::VarError::NotPresent) => Ok(default),
+        // [설명] 값이 있긴 한데 유효한 유니코드가 아닌 경우. 드물지만 조용히 넘기면
+        // "설정했는데 반영이 안 된다"는 가장 찾기 어려운 종류의 문제가 된다.
+        Err(env::VarError::NotUnicode(_)) => {
+            Err(anyhow::anyhow!("{key}: value is not valid unicode"))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // [설명] 환경변수는 프로세스 전역이라 테스트가 병렬로 돌면 서로 간섭한다. 그래서
+    // 이 서비스가 실제로 읽는 키(DB_MAX_CONNECTIONS 등)는 건드리지 않고, 테스트 전용
+    // 이름을 따로 만들어 쓴다 — 다른 테스트가 같은 키를 보지 않으므로 병렬로 돌아도 안전하다.
+    #[test]
+    fn a_missing_variable_falls_back_to_the_default() {
+        let value = env_or::<u64>("SKELETON_TEST_DEFINITELY_UNSET", 7).unwrap();
+
+        assert_eq!(value, 7);
+    }
+
+    // [테스트 시나리오] 값이 있는데 해석되지 않으면 기본값으로 넘어가지 않고 에러여야 한다.
+    // 이 성질이 깨지면 오타 난 설정이 조용히 무시되므로, 실패 메시지에 키 이름과 실제
+    // 입력이 함께 담기는 것까지 확인한다.
+    #[test]
+    fn an_unparsable_value_is_an_error_not_a_silent_default() {
+        // SAFETY: 이 키는 이 테스트에서만 쓰며, 아래에서 곧바로 제거한다.
+        unsafe { env::set_var("SKELETON_TEST_BAD_NUMBER", "1O") };
+
+        let result = env_or::<u64>("SKELETON_TEST_BAD_NUMBER", 10);
+
+        unsafe { env::remove_var("SKELETON_TEST_BAD_NUMBER") };
+
+        let message = result.unwrap_err().to_string();
+        assert!(message.contains("SKELETON_TEST_BAD_NUMBER"), "{message}");
+        assert!(message.contains("1O"), "{message}");
+    }
 }
