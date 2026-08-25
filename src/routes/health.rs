@@ -60,10 +60,13 @@ mod tests {
     // mock을 넣는 게 요점 — 빈 mock은 호출되면 패닉하므로, 그 자체가 "이 경로는 그 포트를
     // 건드리지 않는다"는 검증이다. 편하다고 permissive한 mock을 넣으면 그 성질이 사라진다.
     fn router(health_store: MockHealthStore) -> axum::Router {
-        crate::routes::build(Arc::new(AppState {
-            example_store: Arc::new(MockExampleStore::new()),
-            health_store: Arc::new(health_store),
-        }))
+        crate::routes::build(
+            Arc::new(AppState {
+                example_store: Arc::new(MockExampleStore::new()),
+                health_store: Arc::new(health_store),
+            }),
+            std::time::Duration::from_secs(30),
+        )
     }
 
     // [테스트 시나리오] liveness가 어떤 의존성도 건드리지 않는지 확인한다. 두 포트 모두

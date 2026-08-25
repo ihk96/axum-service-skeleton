@@ -61,10 +61,15 @@ mod tests {
     // expectation 없는 빈 mock으로 두는데, 그건 곧 "이 경로는 그 포트를 건드리지 않는다"는
     // 검증이다 — 빈 mock은 호출되는 순간 패닉하기 때문.
     fn router(example_store: MockExampleStore) -> axum::Router {
-        crate::routes::build(Arc::new(AppState {
-            example_store: Arc::new(example_store),
-            health_store: Arc::new(MockHealthStore::new()),
-        }))
+        // 타임아웃은 이 테스트들의 관심사가 아니므로 넉넉히 준다 — 값이 짧으면
+        // 느린 CI에서 간헐적으로 408이 나면서 엉뚱한 실패로 보인다.
+        crate::routes::build(
+            Arc::new(AppState {
+                example_store: Arc::new(example_store),
+                health_store: Arc::new(MockHealthStore::new()),
+            }),
+            std::time::Duration::from_secs(30),
+        )
     }
 
     fn post_json(uri: &str, body: &str) -> Request<Body> {

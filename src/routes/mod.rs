@@ -9,25 +9,82 @@
 mod example;
 mod health;
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
-use axum::Router;
-use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
+use axum::{extract::Request, Router};
+use tower::ServiceBuilder;
+use tower_http::{
+    catch_panic::CatchPanicLayer,
+    request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
+    timeout::TimeoutLayer,
+    trace::{DefaultOnResponse, TraceLayer},
+};
 use tracing::Level;
 
 use crate::state::AppState;
 
-pub fn build(state: Arc<AppState>) -> Router {
+/// 요청 식별자를 실어 나르는 헤더.
+// [설명] 요청에 이미 이 헤더가 있으면 그 값을 그대로 쓰고, 없을 때만 새로 만든다.
+// 앞단(로드밸런서, 게이트웨이, 호출한 다른 서비스)이 붙여준 값을 이어받는 게 핵심이다 —
+// 여기서 매번 새로 발급해버리면 서비스 경계를 넘는 순간 추적이 끊겨서, 요청 하나를
+// 시스템 전체에서 따라갈 수 없게 된다.
+const REQUEST_ID_HEADER: &str = "x-request-id";
+
+pub fn build(state: Arc<AppState>, request_timeout: Duration) -> Router {
     Router::new()
         .merge(health::routes())
         .merge(example::routes())
         .with_state(state)
+        // [아키텍처] 미들웨어는 ServiceBuilder로 쌓는다. Router::layer를 여러 번 부르면
+        // 나중에 붙인 것이 바깥이 되어 코드에 적힌 순서와 실행 순서가 뒤집히는데,
+        // ServiceBuilder는 **먼저 쓴 layer가 바깥**이라 읽는 순서가 곧 요청이 통과하는
+        // 순서다. 아래처럼 순서 자체가 의미를 갖는 스택에서는 헷갈릴 여지를 없애는 게 낫다.
         .layer(
-            // TraceLayer의 기본 레벨은 DEBUG인데, 그러면 `RUST_LOG=info`로는 안 보이고
-            // tower_http 전체에 debug를 켜야 해서 관련 없는 내부 로그까지 딸려온다 —
-            // 그래서 여기서 명시적으로 INFO로 낮춘다.
-            TraceLayer::new_for_http()
-                .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
-                .on_response(DefaultOnResponse::new().level(Level::INFO)),
+            ServiceBuilder::new()
+                // 1. 가장 먼저 요청 식별자를 확정한다. 뒤따르는 모든 레이어와 핸들러가 이
+                //    값을 볼 수 있어야 로그가 요청 단위로 묶인다.
+                .layer(SetRequestIdLayer::new(
+                    REQUEST_ID_HEADER.parse().unwrap(),
+                    MakeRequestUuid,
+                ))
+                // 2. 그 다음이 로깅. span에 request_id를 실어 두면 이 요청을 처리하는 동안
+                //    남는 모든 로그에 자동으로 따라붙어서, 동시 요청이 뒤섞여도 구분된다.
+                //    이게 없으면 "3시 12분에 에러가 났다"는 문의를 로그에서 특정할 수 없다.
+                //
+                //    TraceLayer의 기본 레벨은 DEBUG인데, 그러면 `RUST_LOG=info`로는 안 보이고
+                //    tower_http 전체에 debug를 켜야 해서 관련 없는 내부 로그까지 딸려온다.
+                .layer(
+                    TraceLayer::new_for_http()
+                        .make_span_with(|req: &Request| {
+                            let request_id = req
+                                .headers()
+                                .get(REQUEST_ID_HEADER)
+                                .and_then(|value| value.to_str().ok())
+                                .unwrap_or("-");
+
+                            tracing::info_span!(
+                                "request",
+                                method = %req.method(),
+                                uri = %req.uri(),
+                                request_id = %request_id,
+                            )
+                        })
+                        .on_response(DefaultOnResponse::new().level(Level::INFO)),
+                )
+                // 3. 패닉 잡기는 로깅 **안쪽**이어야 한다. 바깥에 두면 패닉으로 만들어진
+                //    500이 위 span 밖에서 만들어져 로그에 남지 않고, 서버는 응답했는데
+                //    기록은 없는 상태가 된다. 이 레이어가 아예 없으면 패닉 시 응답 없이
+                //    연결만 끊겨서 클라이언트는 원인을 알 방법이 없다.
+                .layer(CatchPanicLayer::new())
+                // 4. 타임아웃은 핸들러 바로 위. 초과하면 408로 끊는다. store::pg_pool의
+                //    DB 타임아웃(acquire/statement)이 막지 못하는 구간 — 외부 HTTP 호출이
+                //    응답하지 않는 경우 같은 — 을 여기서 막는다. 이것이 없으면 끝나지 않는
+                //    요청이 쌓이면서 커넥션과 태스크를 계속 점유한다.
+                .layer(TimeoutLayer::new(request_timeout))
+                // 5. 마지막으로 확정된 식별자를 응답 헤더로 돌려준다. 클라이언트가 문의할 때
+                //    이 값을 함께 주면 서버 로그에서 그 요청만 바로 집어낼 수 있다.
+                .layer(PropagateRequestIdLayer::new(
+                    REQUEST_ID_HEADER.parse().unwrap(),
+                )),
         )
 }

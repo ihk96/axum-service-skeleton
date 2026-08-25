@@ -43,10 +43,27 @@ impl AppError {
             AppError::Database(_) | AppError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
+
+    // [아키텍처] 응답 바디에 실을 메시지. `Display`(=`to_string()`)와 일부러 분리했다.
+    //
+    // 4xx는 클라이언트가 스스로 고칠 수 있는 실패이므로 원인을 그대로 알려주는 게 맞다.
+    // 반면 5xx의 상세는 감춘다 — 예컨대 `Database` variant의 Display는 sqlx가 만든 원문이라
+    // 제약 이름이나 컬럼명, 경우에 따라 쿼리 조각까지 담고 있어서, 그대로 내보내면 외부
+    // 호출자가 응답만 모아도 내부 스키마를 재구성할 수 있다. 상세는 아래 로그에만 남긴다.
+    //
+    // [주의] variant를 추가할 때 여기의 `_ =>`가 그것을 4xx처럼 취급해 상세를 노출한다.
+    // 새 variant가 5xx라면 위 목록에 함께 넣을 것.
+    fn client_message(&self) -> String {
+        match self {
+            AppError::Database(_) | AppError::Internal(_) => "internal server error".to_string(),
+            _ => self.to_string(),
+        }
+    }
 }
 
 // [아키텍처] 5xx(서버 잘못)만 로그를 남기고 4xx(클라이언트 잘못)는 남기지 않는다 —
-// 잘못된 요청이 들어올 때마다 서버 로그가 시끄러워지는 것을 막는다.
+// 잘못된 요청이 들어올 때마다 서버 로그가 시끄러워지는 것을 막는다. 로그에는 `self`를
+// 그대로 찍어 상세를 남기고, 클라이언트에게는 위 `client_message()`로 걸러서 보낸다.
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let status = self.status_code();
@@ -55,6 +72,32 @@ impl IntoResponse for AppError {
             tracing::error!(error = %self, "request failed");
         }
 
-        (status, Json(json!({ "error": self.to_string() }))).into_response()
+        (status, Json(json!({ "error": self.client_message() }))).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // [테스트 시나리오] 5xx의 상세가 응답 바디로 새어나가지 않는지. sqlx 에러 원문에는
+    // 제약 이름이나 컬럼명이 담기므로, 이 규칙이 깨지면 스키마가 외부로 노출된다.
+    #[test]
+    fn server_errors_do_not_leak_details_to_the_client() {
+        let err = AppError::Database(sqlx::Error::PoolClosed);
+
+        // Display는 상세를 유지한다 — 로그가 쓸 정보다.
+        assert!(err.to_string().contains("PoolClosed") || err.to_string().contains("pool"));
+        // 클라이언트로 나가는 쪽은 일반화된 문구뿐이다.
+        assert_eq!(err.client_message(), "internal server error");
+    }
+
+    // [테스트 시나리오] 반대로 4xx는 원인을 그대로 알려줘야 한다 — 클라이언트가 고칠 수
+    // 있는 실패이기 때문이다.
+    #[test]
+    fn client_errors_keep_their_reason() {
+        let err = AppError::BadRequest("name must not be empty".into());
+
+        assert_eq!(err.client_message(), "bad request: name must not be empty");
     }
 }
