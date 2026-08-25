@@ -2,8 +2,11 @@
 # 담당하고(`docker build -t my-service .`), 이 파일은 "그 이미지를 어떤 환경변수/네트워크로
 # 실행하는가"만 다룬다. 그대로 쓰기보다 배포 환경에 맞게 고쳐 쓰는 것을 전제로 한 가이드다.
 #
-# 개발 중에는 이 파일이 필요 없다 — DB만 띄우고(`docker compose up -d postgres`)
-# 서버는 `cargo run`으로 도는 게 훨씬 빠르다.
+# 개발 중에는 이 파일이 필요 없다 — 서버는 `cargo run`으로 도는 게 훨씬 빠르다.
+#
+# [설명] DB 서비스를 여기에 두지 않았다. 이 구성은 "이미 있는 Postgres에 붙는다"를
+# 전제로 하며, 접속 정보는 아래 DATABASE_URL로 주입한다. compose가 DB까지 띄우게
+# 하려면 postgres 서비스와 볼륨을 직접 추가하고, app에 depends_on을 걸면 된다.
 services:
   app:
     # 로컬에서 구운 태그. 레지스트리를 쓰면 registry.example.com/my-service:0.1.0처럼
@@ -13,12 +16,12 @@ services:
     ports:
       - "8080:8080"
     environment:
-      # 컨테이너 안에서 DB 주소는 localhost가 아니라 서비스 이름(postgres)이다 —
-      # compose가 서비스 이름을 DNS로 풀어준다. DB가 compose 밖(관리형 DB, 기존
-      # 인스턴스)에 있으면 아래 postgres 서비스와 depends_on을 지우고 여기에
-      # 실제 호스트를 넣는다.
+      # 값을 파일에 박지 않고 실행 환경에서 주입받는다 — compose는 이 파일 옆의
+      # .env를 자동으로 읽어 ${...} 자리를 채우며, 값이 없으면 뒤의 메시지를 내고
+      # 즉시 실패한다(컨테이너가 뜬 뒤에 죽는 것보다 낫다).
       #
-      # 비밀값을 파일에 박지 않으려면 `DATABASE_URL: ${DATABASE_URL:?required}`처럼
-      # 두고 실행 환경에서 주입한다(값이 없으면 compose가 즉시 실패한다).
-      DATABASE_URL: postgres://postgres:postgres@postgres:5432/app
-      RUST_LOG: info
+      # [주의] 컨테이너 안에서 DB 호스트는 개발 머신 기준의 127.0.0.1이 아니다.
+      # DB를 compose 서비스로 추가했다면 그 서비스 이름이 곧 호스트명이고(compose가
+      # DNS로 풀어준다), 바깥의 DB라면 컨테이너에서 닿는 실제 호스트를 써야 한다.
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL이 필요합니다 - .env.example 참고}
+      RUST_LOG: ${RUST_LOG:-info}
