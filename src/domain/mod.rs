@@ -7,7 +7,11 @@
 // 그 포트를 누가 구현했는지는 신경 쓰지 않는다 — 덕분에 테스트가 mock만으로 돌고,
 // 호출부는 routes/(HTTP)든 bin/(CLI)든 백그라운드 태스크든 상관없다.
 //
-// 스켈레톤을 복사한 뒤 지울 것은 아래 두 파일과 그에 딸린 store/example.rs,
+// 스켈레톤을 복사한 뒤 지울 것은 아래 example 파일들과 그에 딸린 store/example.rs,
 // routes/example.rs, migrations/0001_init.sql이다.
 pub mod example;
-pub mod example_task;
+pub mod example_job;
+
+// 스케줄 job 등록부. 예제가 아니라 이 서비스의 배치 목록이므로 파일 자체는 남기고
+// 안의 예제 항목만 지운다.
+pub mod jobs;

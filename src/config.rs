@@ -30,8 +30,18 @@ pub struct AppConfig {
     /// 종료되지 않으면 오케스트레이터가 결국 SIGKILL로 때리므로, graceful하게 만든 의미가
     /// 사라지기 때문이다. 쿠버네티스라면 terminationGracePeriodSeconds보다 짧게 잡을 것.
     pub shutdown_timeout_secs: u64,
-    /// 예제 백그라운드 태스크의 주기. domain/example_task.rs와 함께 지울 대상.
-    pub example_sweep_interval_secs: u64,
+    /// 이 프로세스가 스케줄 job(domain/jobs.rs)을 돌릴지 여부. 기본은 켜짐이다.
+    ///
+    /// 중복 실행은 DB 락이 막으므로 여러 인스턴스가 켜 두어도 안전하다. 이 스위치는
+    /// "배치는 전용 인스턴스에서만 돌린다"처럼 배치를 **의도적으로 분리 배치**할 때,
+    /// 또는 로컬에서 잠깐 꺼둘 때 쓴다.
+    pub scheduler_enabled: bool,
+    /// 스케줄러의 실행 기록(scheduled_job_runs)을 며칠 보관할지. 스케줄러가 내부적으로
+    /// 등록하는 정리 job이 이 값을 쓴다.
+    ///
+    /// [주의] 그 기록은 이력이자 **락**이다. 발화 주기 근처로 짧게 잡으면 방금 끝난 발화의
+    /// 행이 지워지면서 같은 발화를 다른 인스턴스가 다시 선점할 수 있다. 일 단위로 넉넉히.
+    pub scheduler_run_retention_days: i64,
 }
 
 impl AppConfig {
@@ -53,7 +63,11 @@ impl AppConfig {
             db_acquire_timeout_secs: env_or("DB_ACQUIRE_TIMEOUT_SECS", 10)?,
             db_statement_timeout_secs: env_or("DB_STATEMENT_TIMEOUT_SECS", 30)?,
             shutdown_timeout_secs: env_or("SHUTDOWN_TIMEOUT_SECS", 10)?,
-            example_sweep_interval_secs: env_or("EXAMPLE_SWEEP_INTERVAL_SECS", 30)?,
+            // [설명] bool도 같은 헬퍼를 그대로 쓴다 — `FromStr`이 있으므로. 대신 받는
+            // 값은 "true"/"false"뿐이다. "1"이나 "yes"를 넣으면 기본값으로 조용히
+            // 폴백하지 않고 기동 에러가 난다(그게 이 헬퍼의 규칙이다).
+            scheduler_enabled: env_or("SCHEDULER_ENABLED", true)?,
+            scheduler_run_retention_days: env_or("SCHEDULER_RUN_RETENTION_DAYS", 30)?,
         })
     }
 }

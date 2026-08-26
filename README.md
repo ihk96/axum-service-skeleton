@@ -132,14 +132,17 @@ docker compose up -d   # 이미지가 이미 있어야 하고, .env에 DATABASE_
 ```
 src/store/example.rs        포트 trait + Postgres 구현
 src/domain/example.rs       도메인 로직 (포트를 &dyn으로 받음)
-src/domain/example_task.rs  백그라운드 태스크
+src/domain/example_job.rs   스케줄 job
 src/routes/example.rs       HTTP 핸들러
 migrations/0001_init.sql    예제 테이블
 ```
 
 지울 때 함께 손볼 곳: `src/domain/mod.rs`, `src/routes/mod.rs`, `src/store/mod.rs`의 모듈 선언,
-`src/state.rs`의 필드, `src/config.rs`의
-`example_sweep_interval_secs`, `src/server/mod.rs`의 `tokio::spawn`.
+`src/state.rs`의 필드, 그리고 `src/domain/jobs.rs`의 등록 항목(파일 자체는 남긴다).
+
+`scheduler/`와 `migrations/0002_scheduled_job_runs.sql`, `src/store/job_run.rs`는 예제가 아니라
+골격이다. 배치를 쓰지 않기로 했다면 셋을 함께 지우고 `AppState`의 `job_run_store`와
+`server/mod.rs`의 `Scheduler` 두 줄을 걷어낸다.
 
 그리고 **예제를 지운 뒤 `cargo sqlx prepare`를 다시 돌린다.** 캐시에는 지워진 쿼리의
 검증 데이터가 그대로 남아 있어서, 갱신하지 않으면 존재하지 않는 테이블의 정보를 계속
@@ -152,7 +155,7 @@ migrations/0001_init.sql    예제 테이블
 1. **로직은 lib, bin은 껍데기.** bin 안의 코드는 다른 bin도 통합 테스트도 재사용할 수 없다.
 2. **모듈은 "다른 프로젝트로 옮겼을 때 내용이 그대로인가"로 가른다.** 그대로면 골격, 아니면 `domain/`.
 3. **`AppState`는 `Clone` 없이 `new() -> Arc<Self>`.** 공유는 항상 Arc clone.
-4. **백그라운드 태스크 진입점은 `Arc<AppState>`, 로직은 좁은 `&dyn` 포트.**
+4. **백그라운드 진입점은 `Arc<AppState>`, 로직은 좁은 `&dyn` 포트.** 스케줄 job도 태스크도 같다.
 5. **포트는 trait + `automock`.** 그래서 DB 없이 테스트가 돈다.
 
 ## 들어있지 않은 것

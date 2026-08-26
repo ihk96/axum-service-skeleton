@@ -15,9 +15,14 @@ src/
   server/         "이 프로세스가 HTTP 서버라서" 필요한 것들
     mod.rs        부팅 절차 `run(cfg)`
     shutdown.rs   SIGINT/SIGTERM을 기다리는 Future
+  scheduler/      크론식 배치의 실행기. 무엇을 언제 돌릴지는 모른다(domain/jobs.rs가 안다)
+    registry.rs   등록 창구 `JobRegistry` — 바깥이 보는 유일한 면
+    runner.rs     실행 기반: 크론식 파싱 + job별 루프 + 분산 락
+    prune.rs      실행 기록을 청소하는 job. 스케줄러가 자기를 스스로 등록한다
   store/          저장소 포트(trait)와 그 Postgres 어댑터. `pg_pool()`도 여기
     mod.rs        pg_pool, PgStore, re-export
     health.rs     readiness용 ping 포트
+    job_run.rs    스케줄러의 실행 선점/기록 포트
     example.rs    [예제] 포트 + 구현
   routes/         HTTP 핸들러(어댑터). 요청 파싱 → domain 호출 → 직렬화만
     mod.rs        라우터 조립 + TraceLayer
@@ -25,7 +30,8 @@ src/
     example.rs    [예제] 핸들러
   domain/         이 서비스만의 로직. HTTP도 SQL도 모른다
     example.rs      [예제] 도메인 함수
-    example_task.rs [예제] 백그라운드 태스크
+    example_job.rs  [예제] 스케줄 job
+    jobs.rs         스케줄 job 등록부 — 이 서비스가 무엇을 언제 돌리는지의 전부
   bin/            진입점들. "밖에서 앱을 어떻게 호출하는가"만 안다
     server.rs     HTTP 서버 (`cargo run`)
 migrations/       sqlx 마이그레이션
@@ -52,6 +58,39 @@ bin 크레이트에 있는 코드는 (1) 같은 패키지의 다른 bin이 재�
 재노출을 조합하는 이유는 공개 경로를 하나만 남기기 위해서다 — `pub mod domain`으로 하면
 `crate::domain::example`과 `crate::example`이 동시에 공개돼 사용법이 갈린다.
 
+### 스케줄러
+
+`scheduler/`(기반) + `domain/jobs.rs`(등록)로 "매일 03:00 KST" 같은 **시각 기반** 배치를 돌린다.
+인스턴스가 몇 개든 발화당 한 번만 돈다.
+
+**여기로 오지 않는 것도 있다.** 인스턴스마다 각자 돌아야 하는 상시 루프(kafka 컨슈머, 로컬
+캐시 갱신)는 스케줄러가 아니라 `server::run`에서 직접 spawn하는 태스크로 둔다 — 그쪽은 발화
+시각이라는 개념이 없고, 중복 실행을 막는 것이 오히려 잘못이다. 지금 그런 태스크는 없지만
+자리는 `server::run`의 `tasks`에 남아 있다.
+
+스케줄러 쪽에서 결정한 것들:
+
+- **크론 크레이트가 아니라 크론식 파서만 쓴다.** `croner`에서 빌려 오는 건 "다음 발화 시각"
+  계산뿐이고, 루프와 종료는 서버와 같은 방식(`CancellationToken` + `select!`)으로 직접 짠다. 스케줄러 크레이트를 통째로 쓰면 자기 실행기와 종료 방식이 딸려 와서 이 서비스의
+  graceful shutdown과 겹친다.
+- **중복 실행은 DB가 막는다.** 발화 시각은 크론식에서 나오므로 모든 인스턴스가 같은 값을
+  계산한다. 그 `(job 이름, 발화 시각)`을 기본키로 하는 `scheduled_job_runs`에 먼저 INSERT한
+  인스턴스만 실행하고 나머지는 충돌을 받고 넘어간다. 리더 선출도 락 서비스도 없다.
+  advisory lock은 job이 짧으면 시계 편차만큼 중복 창이 생겨서 택하지 않았다.
+- **job마다 태스크 하나.** 한 루프에서 다 돌리면 오래 걸리는 job이 다른 job의 발화를 민다.
+- **job 본체는 `tokio::spawn`으로 한 겹 감싼다.** 패닉이 `JoinError`로 잡히므로 job 하나의
+  버그가 그 job을 프로세스 수명 내내 멈추지 않는다.
+- **놓친 발화는 따라잡지 않는다.** 다음 발화는 항상 "지금" 기준으로 계산한다. 프로세스가
+  꺼져 있던 동안의 배치가 기동 직후 한꺼번에 쏟아지는 쪽이 대개 더 위험하다.
+
+- **등록과 기반을 파일로 갈랐다.** 등록 창구(`registry.rs`)를 통과시키므로 `domain/jobs.rs`가
+  아는 이름은 `JobRegistry`와 `Tz` 둘뿐이고, 실행기 타입은 하나도 새어나가지 않는다.
+  `Scheduler::build`가 등록부를 **값이 아니라 함수로** 받는 것도 같은 이유다 — 스케줄러가
+  자기 유지보수 job(prune)을 먼저 등록한 뒤 창구를 넘기므로, 그 job이 등록부에 보이지 않는다.
+
+job을 추가할 때 손대는 파일은 `domain/` 아래 둘(job 함수, `jobs.rs` 등록 한 줄)뿐이다.
+`server/mod.rs`도 `scheduler/`도 건드리지 않는다.
+
 ### AppState
 
 Rust에는 런타임 리플렉션이 없어서 Spring식 컴포넌트 스캐닝이 원리적으로 불가능하다
@@ -69,12 +108,12 @@ Rust에는 런타임 리플렉션이 없어서 Spring식 컴포넌트 스캐닝�
 
 ### 진입점은 state, 로직은 좁은 포트
 
-백그라운드 태스크에서 특히 중요하다. `run_periodic(state: Arc<AppState>, interval)`은
-`Arc<AppState>`를 통째로 받고, 실제 로직인 `sweep(store: &dyn ExampleStore)`는 필요한 포트만
-받는다. 양쪽 이득을 다 가지려는 것이다:
+백그라운드에서 도는 코드에서 특히 중요하다. 스케줄 job의 진입점
+`example_job::run(state: Arc<AppState>)`은 state를 통째로 받고, 실제 로직인
+`summarize(store: &dyn ExampleStore)`는 필요한 포트만 받는다. 양쪽 이득을 다 가지려는 것이다:
 
-- 진입점이 state를 받으므로, 태스크가 나중에 포트를 더 쓰게 되어도 `server::run`의 호출부는
-  손대지 않는다. 태스크를 추가할 때 필요한 포트를 골라 각각 clone하는 작업도 없다.
+- 진입점이 state를 받으므로, job이 나중에 포트를 더 쓰게 되어도 등록 줄(`domain/jobs.rs`)이나
+  `server::run`의 호출부는 손대지 않는다. 필요한 포트를 골라 각각 clone하는 작업도 없다.
 - 로직은 좁은 시그니처라 테스트가 mock 하나로 끝나고, 시그니처 자체가 "이 함수는 이것만
   건드린다"는 문서가 된다.
 

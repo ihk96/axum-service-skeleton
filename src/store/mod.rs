@@ -11,6 +11,7 @@
 // 테스트 대상에서 제외한다 — SQL이 맞는지는 실제 DB에 붙여봐야만 알 수 있는 종류의 문제다.
 pub mod example;
 pub mod health;
+pub mod job_run;
 
 use std::time::Duration;
 
@@ -20,6 +21,7 @@ use crate::config::AppConfig;
 
 pub use example::{ExampleRecord, ExampleStore};
 pub use health::HealthStore;
+pub use job_run::JobRunStore;
 
 /// 설정에 따라 Postgres 커넥션 풀을 만든다.
 // [아키텍처] 이 함수가 bin이 아니라 여기에 있는 이유는, 서버와 CLI 등 모든 진입점이 같은

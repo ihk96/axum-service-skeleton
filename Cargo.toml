@@ -32,6 +32,15 @@ serde_json = "1"
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono", "migrate", "macros"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
+# [설명] 스케줄러(scheduler/)가 쓰는 두 크레이트.
+#   croner    크론식 파싱과 "다음 발화 시각" 계산만 한다. 태스크를 돌리는 일은 하지 않는다 —
+#             그건 tokio + CancellationToken으로 우리가 직접 짠다. 스케줄러 크레이트
+#             (tokio-cron-scheduler 등)를 통째로 쓰지 않은 이유가 여기 있다: 그쪽은 자기
+#             실행기와 종료 방식을 함께 들고 와서, 이 서비스의 graceful shutdown 흐름과
+#             겹친다. "계산"만 빌려 오면 종료·로깅·에러 처리를 기존 규칙 그대로 쓸 수 있다.
+#   chrono-tz "매일 새벽 3시"가 어느 시간대인지 정하는 데 쓴다(job마다 지정).
+croner = "3"
+chrono-tz = "0.10"
 
 # 도메인 에러는 thiserror로 구체 타입(error.rs의 AppError), 최상위는 anyhow로
 # 뭉뚱그린다 — 기준은 "호출자가 에러 종류를 구분해야 하는가".
