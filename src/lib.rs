@@ -18,6 +18,10 @@ pub mod sync_util;
 // 나란히 놓는다(예: consumer/).
 pub mod server;
 
+// 크론식 배치의 실행기. server/와 나란한 층위다 — "이 프로세스가 배치를 돌려서" 필요한
+// 것들이고, 무엇을 언제 돌릴지(domain/jobs.rs)는 알지 않는다.
+pub mod scheduler;
+
 // 포트(trait)와 그 어댑터. 도메인은 이 trait들만 보고 구현체는 모른다.
 // 밖으로 나가는 통합이 늘어나면 여기 형제로 추가한다 — 이때 폴더 이름은 기술이
 // 아니라 포트 이름으로 짓는다(`redis/`가 아니라 `cache/`, `kafka/`가 아니라

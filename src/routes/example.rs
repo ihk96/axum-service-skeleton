@@ -53,7 +53,10 @@ mod tests {
 
     use crate::{
         state::AppState,
-        store::{example::MockExampleStore, health::MockHealthStore, ExampleRecord},
+        store::{
+            example::MockExampleStore, health::MockHealthStore, job_run::MockJobRunStore,
+            ExampleRecord,
+        },
     };
     use uuid::Uuid;
 
@@ -67,6 +70,7 @@ mod tests {
             Arc::new(AppState {
                 example_store: Arc::new(example_store),
                 health_store: Arc::new(MockHealthStore::new()),
+                job_run_store: Arc::new(MockJobRunStore::new()),
             }),
             std::time::Duration::from_secs(30),
         )

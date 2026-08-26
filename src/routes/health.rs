@@ -53,7 +53,7 @@ mod tests {
     use crate::{
         error::AppError,
         state::AppState,
-        store::{example::MockExampleStore, health::MockHealthStore},
+        store::{example::MockExampleStore, health::MockHealthStore, job_run::MockJobRunStore},
     };
 
     // [설명] 테스트마다 AppState를 직접 조립한다. 관심 없는 필드에 expectation 없는 빈
@@ -64,6 +64,7 @@ mod tests {
             Arc::new(AppState {
                 example_store: Arc::new(MockExampleStore::new()),
                 health_store: Arc::new(health_store),
+                job_run_store: Arc::new(MockJobRunStore::new()),
             }),
             std::time::Duration::from_secs(30),
         )

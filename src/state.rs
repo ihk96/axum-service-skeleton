@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::store::{ExampleStore, HealthStore};
+use crate::store::{ExampleStore, HealthStore, JobRunStore};
 
 // [아키텍처] 요청 핸들러와 백그라운드 태스크가 함께 쓰는 공유 자원을 한데 묶은 구조체.
 // 별도 DI 프레임워크 없이 이것 하나를 `Arc`로 나눠 갖는 게 Rust 웹 서비스의 관용구다
@@ -27,6 +27,8 @@ use crate::store::{ExampleStore, HealthStore};
 pub struct AppState {
     pub example_store: Arc<dyn ExampleStore>,
     pub health_store: Arc<dyn HealthStore>,
+    /// 스케줄러가 발화를 선점하는 데 쓴다(scheduler/, store/job_run.rs).
+    pub job_run_store: Arc<dyn JobRunStore>,
 }
 
 impl AppState {
@@ -36,11 +38,12 @@ impl AppState {
     // 바뀌는 건 unsized coercion — refcount만 올리고 vtable을 붙이는 것이라 실질 비용이 없다.
     pub fn new<S>(store: Arc<S>) -> Arc<Self>
     where
-        S: ExampleStore + HealthStore + 'static,
+        S: ExampleStore + HealthStore + JobRunStore + 'static,
     {
         Arc::new(Self {
             example_store: store.clone(),
-            health_store: store,
+            health_store: store.clone(),
+            job_run_store: store,
         })
     }
 }

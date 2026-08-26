@@ -17,8 +17,8 @@ use std::{sync::Arc, time::Duration};
 
 use crate::{
     config::AppConfig,
-    example_task,
-    routes,
+    jobs, routes,
+    scheduler::Scheduler,
     state::AppState,
     store::{self, PgStore},
 };
@@ -43,15 +43,19 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
     // "모두가 하던 일을 마치고 각자 멈추는 것"이 되게 하는 유일한 연결고리다.
     let shutdown = shutdown::listen();
 
-    // [설명] 백그라운드 태스크는 tokio::spawn으로 던지되 JoinHandle을 들고 있는다. 태스크가
-    // 여러 개로 늘어도 여기 추가되는 건 state.clone()과 토큰 clone을 넘기는 한 줄뿐이다 —
+    // [아키텍처] 스케줄러는 여기서 **조립만** 한다. 넘기는 것은 job 목록이 아니라
+    // domain/jobs.rs의 등록 함수이고, job을 추가해도 이 줄은 그대로다.
+    //
+    // 조립을 spawn보다 먼저 하는 이유는 크론식이 문자열이기 때문이다. 오타는 컴파일 타임에
+    // 걸리지 않으므로 여기서 `?`로 기동을 실패시킨다 — 안 그러면 "배포는 됐는데 그 배치만
+    // 조용히 안 도는" 상태가 되고, 그건 다음 발화 시각이 지나야 드러난다.
+    let scheduler = Scheduler::build(&cfg, jobs::register)?;
+
+    // [설명] 백그라운드 태스크는 tokio::spawn으로 던지되 JoinHandle을 들고 있는다. 지금은
+    // 스케줄러 하나뿐이라 Vec일 이유가 없어 보이지만, 상시 루프 태스크(kafka 컨슈머 등)를
+    // 붙일 자리가 여기다 — 그때 추가되는 건 state.clone()과 토큰 clone을 넘기는 한 줄뿐이다.
     // 태스크마다 필요한 포트를 골라 각각 clone할 일이 없다(그게 state를 통째로 넘기는 이유).
-    // 핸들이 여러 개가 되면 아래 기다리는 부분을 Vec로 모아 join하면 된다.
-    let sweep_task = tokio::spawn(example_task::run_periodic(
-        state.clone(),
-        Duration::from_secs(cfg.example_sweep_interval_secs),
-        shutdown.clone(),
-    ));
+    let tasks = vec![tokio::spawn(scheduler.run(state.clone(), shutdown.clone()))];
 
     let app = routes::build(state, Duration::from_secs(cfg.request_timeout_secs));
 
@@ -78,13 +82,24 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
     // 무한정 기다리지는 않는다. 태스크가 응답하지 않을 때 프로세스가 영영 안 죽으면
     // 오케스트레이터가 결국 SIGKILL로 때리는데, 그러면 graceful하게 만든 의미가 없다.
     // 상한을 두고 지나면 포기하고 내려간다.
+    //
+    // [설명] 상한은 태스크 하나가 아니라 **전체**에 건다. 태스크마다 따로 걸면 느린 태스크가
+    // 여럿일 때 대기 시간이 합산되어, 설정한 값보다 훨씬 오래 매달려 있게 된다.
     let grace = Duration::from_secs(cfg.shutdown_timeout_secs);
-    match tokio::time::timeout(grace, sweep_task).await {
-        Ok(Ok(())) => tracing::info!("background tasks stopped cleanly"),
-        Ok(Err(err)) => tracing::error!(error = %err, "background task panicked"),
+    let joined = tokio::time::timeout(grace, async {
+        for task in tasks {
+            if let Err(err) = task.await {
+                tracing::error!(error = %err, "background task panicked");
+            }
+        }
+    })
+    .await;
+
+    match joined {
+        Ok(()) => tracing::info!("background tasks stopped cleanly"),
         Err(_) => tracing::warn!(
             timeout_secs = cfg.shutdown_timeout_secs,
-            "background task did not stop in time, exiting anyway"
+            "background tasks did not stop in time, exiting anyway"
         ),
     }
 
