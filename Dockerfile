@@ -79,26 +79,52 @@ FROM debian:bookworm-slim
 # native-tls나 rustls-tls-native-roots를 고르면 ca-certificates 설치가 필요하다.
 
 # 루트로 서비스를 돌리지 않기 위한 전용 계정. --system은 로그인 불가 계정을 만들고,
-# 컨테이너 안에서 파일을 쓸 일이 없으니 홈 디렉토리도 만들지 않는다.
-RUN useradd --system --user-group --no-create-home appuser
+# 이 계정이 쓸 공간은 아래 DATA_DIR 하나뿐이므로 홈 디렉토리는 만들지 않는다.
+#
+# [설명] uid를 숫자로 고정한다. 자동 할당된 uid는 베이스 이미지의 패키지 구성에 따라
+# 달라질 수 있는데, bind mount된 호스트 디렉토리의 소유권은 이름이 아니라 숫자로
+# 비교되므로 이미지를 다시 구웠더니 권한이 어긋나는 일이 생길 수 있다.
+RUN useradd --system --user-group --no-create-home --uid 10001 appuser
+
+# 서비스가 파일을 쓸 유일한 위치. 업로드 저장처럼 디스크에 남겨야 하는 것이 생기면
+# 전부 이 아래에 둔다(`$DATA_DIR/uploads` 같은 식으로) — 컨테이너가 권한을 책임지는
+# 범위가 여기 하나로 정해져 있어야 entrypoint가 할 일이 단순해진다.
+#
+# [설계] 같은 값을 config.rs도 DATA_DIR로 읽는다. 앱이 쓰는 경로와 컨테이너가
+# 준비하는 경로가 어긋나면 런타임에야 드러나므로, 양쪽이 같은 환경변수 하나를 본다.
+# 기본값이 코드 쪽은 ./data인데 여기서 덮어쓰는 이유는, 로컬 `cargo run`은 작업
+# 디렉토리 옆에 두는 편이 편하고 컨테이너는 FHS를 따르는 편이 낫기 때문이다.
+ENV DATA_DIR=/var/lib/app
+RUN mkdir -p "$DATA_DIR" && chown appuser:appuser "$DATA_DIR"
 
 # 바이너리를 PATH(/usr/local/bin)에 넣는다. CLI bin을 추가했다면 여기에 한 줄 더
 # 두면 되고, 그러면 서버가 도는 컨테이너에 대고 `docker exec <container> <cli> ...`로
 # 바로 실행할 수 있다 — docker exec는 셸을 거치지 않고 PATH에서 실행 파일을 찾는다.
 COPY --from=builder /app/target/release/server /usr/local/bin/server
 
-USER appuser
+# [주의] chmod를 여기서 한 번 더 건다. 체크아웃하는 환경(특히 Windows)에 따라 실행
+# 비트가 보존되지 않아, 이것이 없으면 "permission denied"로 컨테이너가 뜨지 않는다.
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-# EXPOSE는 포트를 실제로 열어주는 게 아니라 "이 이미지는 이 포트를 쓴다"는 메타데이터다.
-# 실제 바인딩은 SERVER_ADDR로 정하며 기본값이 0.0.0.0:8080(config.rs)이다 — 127.0.0.1로
-# 바인딩하면 컨테이너 네트워크 네임스페이스에 갇혀서 포트 매핑이 무용지물이 된다.
+# [주의] 여기에 USER appuser가 없는 것은 실수가 아니다. bind mount로 붙은 호스트
+# 디렉토리는 위 chown을 덮어버리므로, 소유권은 마운트가 끝난 뒤에야 맞출 수 있다.
+# 그래서 컨테이너는 root로 시작하고 entrypoint가 정리한 뒤 스스로 appuser로 내려앉는다
+# (docker-entrypoint.sh 참고). 서버 프로세스 자체는 결국 appuser로 돈다.
+#
+# [주의] 쿠버네티스에서 securityContext.runAsNonRoot를 걸면 "이미지가 root로 시작한다"는
+# 이유로 파드가 아예 뜨지 못한다. 그런 환경이라면 여기에 USER appuser를 되살리고,
+# 대신 볼륨 소유권은 fsGroup으로 맡기면 된다 — 쿠버네티스는 그 일을 대신 해준다.
+
 EXPOSE 8080
 
 # bin/server.rs의 EnvFilter::from_default_env()는 RUST_LOG가 비어 있으면 사실상
 # 아무것도 출력하지 않는다. 컨테이너에서는 기본값을 박아둔다.
 ENV RUST_LOG=info
 
-# ENTRYPOINT가 아니라 CMD인 이유 — CMD는 `docker run <image> <cli> ...`처럼 실행 인자를
-# 주면 통째로 덮어쓸 수 있다. ENTRYPOINT ["server"]로 두면 뒤에 붙는 인자가 server의
-# 인자로 해석돼서 같은 이미지로 CLI를 돌리기 번거로워진다.
+# [설명] ENTRYPOINT는 권한 정리 스크립트이고, 실제로 무엇을 실행할지는 여전히 CMD가
+# 정한다. 스크립트가 마지막에 `exec "$@"`로 CMD를 그대로 실행하므로, `docker run
+# <image> <cli> ...`처럼 인자를 주면 통째로 덮어쓰는 성질도 그대로다 — 같은 이미지로
+# CLI를 돌리는 경우에도 권한 정리는 똑같이 거쳐 간다.
+ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["server"]

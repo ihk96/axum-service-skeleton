@@ -1,4 +1,5 @@
 use std::env;
+use std::path::PathBuf;
 
 use anyhow::Context;
 
@@ -42,6 +43,17 @@ pub struct AppConfig {
     /// [주의] 그 기록은 이력이자 **락**이다. 발화 주기 근처로 짧게 잡으면 방금 끝난 발화의
     /// 행이 지워지면서 같은 발화를 다른 인스턴스가 다시 선점할 수 있다. 일 단위로 넉넉히.
     pub scheduler_run_retention_days: i64,
+    /// 이 서비스가 디스크에 파일을 남겨야 할 때 쓰는 **유일한** 루트 디렉토리.
+    /// 업로드 보관처럼 용도가 여럿이면 이 아래에 하위 디렉토리를 파서 쓴다.
+    ///
+    /// [설계] 컨테이너에서는 Dockerfile이 같은 DATA_DIR로 이 경로를 만들고 소유권을
+    /// 서비스 계정에 맞춰둔다(docker-entrypoint.sh). 즉 이 값은 앱과 컨테이너가 함께
+    /// 보는 약속이므로, 경로를 바꾸려면 환경변수 하나만 바꾸면 양쪽이 같이 따라온다.
+    ///
+    /// [주의] 기동 시점에 존재 여부나 쓰기 권한을 검사하지 않는다. 아직 이 경로를
+    /// 실제로 쓰는 기능이 없어서, 쓰지도 않을 디렉토리 때문에 기동이 막히는 쪽이
+    /// 손해이기 때문이다. 파일을 쓰는 기능을 처음 붙일 때 그 검사를 여기에 더할 것.
+    pub data_dir: PathBuf,
 }
 
 impl AppConfig {
@@ -68,6 +80,11 @@ impl AppConfig {
             // 폴백하지 않고 기동 에러가 난다(그게 이 헬퍼의 규칙이다).
             scheduler_enabled: env_or("SCHEDULER_ENABLED", true)?,
             scheduler_run_retention_days: env_or("SCHEDULER_RUN_RETENTION_DAYS", 30)?,
+            // [설명] 기본값이 상대 경로 ./data인 것은 로컬 `cargo run`을 위한 것이다.
+            // 컨테이너에서는 Dockerfile의 ENV가 절대 경로로 덮어쓴다.
+            data_dir: env::var("DATA_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("./data")),
         })
     }
 }
