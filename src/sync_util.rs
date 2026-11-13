@@ -10,7 +10,9 @@ use std::sync::{Mutex, MutexGuard};
 // [아키텍처] Mutex를 직접 잠그는 모든 곳이 `.lock()`을 바로 쓰지 않고 항상 이 함수를
 // 거치게 통일해서, poison 복구 정책이 한 곳에만 존재하게 한다.
 pub fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[cfg(test)]

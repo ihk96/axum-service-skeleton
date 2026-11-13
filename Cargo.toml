@@ -1,5 +1,5 @@
 [package]
-# 복사한 뒤 여기 name과 아래 .env.example / README의 서비스 이름만 바꾸면 된다.
+# 복사한 뒤 바꿀 곳은 README의 "시작하기"에 있다(이 name, bin의 use 경로, README 제목).
 name = "axum-service-skeleton"
 version = "0.1.0"
 edition = "2024"
@@ -17,13 +17,12 @@ tower = { version = "0.5", features = ["util"] }
 # 함께 관리하는 부속 크레이트다.
 tokio-util = "0.7"
 # [설명] 미들웨어는 tower-http의 feature 단위로 켠다. 각각이 무엇을 막는지는
-# routes/mod.rs의 레이어 스택 주석 참고.
+# http/mod.rs의 레이어 스택 주석 참고.
 #   request-id  요청마다 식별자를 부여/전파 (로그 상관관계)
 #   timeout     핸들러가 끝나지 않는 요청을 끊는다
 #   catch-panic 핸들러 패닉을 500으로 바꾼다 (응답 없이 연결이 끊기지 않게)
-#   cors        브라우저에서 직접 부를 때 필요. 기본은 꺼져 있고, routes/mod.rs의
-#               주석 처리된 블록을 살리면 켜진다 — feature만 미리 켜 둔 이유는
-#               "필요해졌을 때 한 곳만 고치면 되도록"이다.
+#   cors        브라우저에서 직접 부를 때 필요. CORS_ALLOWED_ORIGINS가 비어 있으면
+#               레이어를 붙이지 않는다(http/mod.rs).
 tower-http = { version = "0.6", features = ["trace", "request-id", "timeout", "catch-panic", "cors"] }
 
 serde = { version = "1", features = ["derive"] }
@@ -55,6 +54,16 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 dotenvy = "0.15"
+
+# [설명] 레이트 리밋(http/middleware/rate_limit.rs). GCRA 알고리즘으로 IP별 버킷을 관리하고,
+# 프록시가 붙여준 x-forwarded-for에서 클라이언트 IP를 뽑는 추출기를 함께 제공한다.
+#
+# [설명] governor를 직접 넣은 이유는 타입 이름 하나(NoOpMiddleware) 때문이다.
+# tower_governor의 GovernorConfig는 미들웨어를 타입 파라미터로 받는데 그 타입을
+# 재export하지 않아서, 설정 타입에 별칭을 붙이려면 원본 크레이트가 필요하다.
+# 이미 tower_governor의 의존성으로 트리에 들어와 있으므로 버전만 맞췄다.
+tower_governor = "0.8"
+governor = { version = "0.10", default-features = false, features = ["std", "quanta", "jitter"] }
 
 [dev-dependencies]
 http-body-util = "0.1"

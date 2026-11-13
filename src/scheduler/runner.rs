@@ -1,5 +1,5 @@
 // [아키텍처] 실행 기반. 크론식 파싱, job별 루프, 분산 락이 여기 있고 **등록은 여기서 하지
-// 않는다** — 등록 창구는 registry.rs이고, 무엇을 언제 돌릴지는 domain/jobs.rs다.
+// 않는다** — 등록 창구는 registry.rs이고, 무엇을 언제 돌릴지는 usecase/jobs.rs다.
 use std::{collections::HashSet, str::FromStr, sync::Arc, time::Duration};
 
 use anyhow::Context;
@@ -40,7 +40,7 @@ impl Scheduler {
     /// 한 줄이면 되고, job이 늘어도 이 시그니처는 그대로다.
     // [아키텍처] 등록부를 값(`Vec<Job>`)이 아니라 **함수**로 받는 이유는, 스케줄러가 자기
     // job(prune)을 먼저 등록한 뒤 창구를 넘겨줘야 하기 때문이다. 그래서 스케줄러의 유지보수
-    // job이 domain/jobs.rs에 드러나지 않는다.
+    // job이 usecase/jobs.rs에 드러나지 않는다.
     pub fn build(cfg: &AppConfig, register: impl FnOnce(&mut JobRegistry)) -> anyhow::Result<Self> {
         // [주의] 보관 기간이 0 이하면 prune이 방금 끝난 발화의 행까지 지운다. 그 행은
         // 기록이자 **락**이라, 사라지면 같은 발화를 다른 인스턴스가 다시 선점할 수 있다.
@@ -221,13 +221,14 @@ mod tests {
     use super::*;
     use crate::{
         error::AppError,
-        store::{example::MockExampleStore, health::MockHealthStore, job_run::MockJobRunStore},
+        store::{MockStore, MockViews, health::MockHealthStore, job_run::MockJobRunStore},
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn state(job_runs: MockJobRunStore) -> Arc<AppState> {
         Arc::new(AppState {
-            example_store: Arc::new(MockExampleStore::new()),
+            store: Arc::new(MockStore::new()),
+            views: Arc::new(MockViews::new()),
             health_store: Arc::new(MockHealthStore::new()),
             job_run_store: Arc::new(job_runs),
         })

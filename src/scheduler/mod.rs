@@ -1,11 +1,11 @@
 // [아키텍처] 크론식으로 도는 배치 job의 실행기. `server/`와 나란한 층위에 두었다 —
 // "이 프로세스가 HTTP 서버라서" 필요한 것이 server/라면, 이쪽은 "이 프로세스가 배치를
 // 돌려서" 필요한 것이다. 내용은 서비스가 바뀌어도 그대로인 골격이고, **무엇을 언제
-// 돌릴지**는 전부 domain/jobs.rs에 있다.
+// 돌릴지**는 전부 usecase/jobs.rs에 있다.
 //
 // 폴더 안이 세 조각으로 나뉜다. 이 구분이 이 모듈의 설계 그 자체다:
 //
-//   registry.rs  등록 창구. 바깥(domain/jobs.rs)이 보는 유일한 면
+//   registry.rs  등록 창구. 바깥(usecase/jobs.rs)이 보는 유일한 면
 //   runner.rs    실행 기반. 크론식 파싱, job별 루프, 분산 락 — 등록부는 이 이름을 모른다
 //   prune.rs     스케줄러가 자기 실행 기록을 청소하는 job. 자기가 자기를 등록한다
 //
@@ -24,5 +24,5 @@ mod runner;
 pub use registry::{JobFuture, JobRegistry};
 pub use runner::Scheduler;
 
-// [설명] 등록부(domain/jobs.rs)가 chrono-tz에 직접 의존하지 않도록 여기서 다시 내보낸다.
+// [설명] 등록부(usecase/jobs.rs)가 chrono-tz에 직접 의존하지 않도록 여기서 다시 내보낸다.
 pub use chrono_tz::Tz;

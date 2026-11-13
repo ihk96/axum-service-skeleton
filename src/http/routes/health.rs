@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::get, Json, Router};
+use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::get};
 use serde_json::json;
 
 use crate::state::AppState;
@@ -53,30 +53,33 @@ mod tests {
     use crate::{
         error::AppError,
         state::AppState,
-        store::{example::MockExampleStore, health::MockHealthStore, job_run::MockJobRunStore},
+        store::{MockStore, MockViews, health::MockHealthStore, job_run::MockJobRunStore},
     };
 
     // [설명] 테스트마다 AppState를 직접 조립한다. 관심 없는 필드에 expectation 없는 빈
     // mock을 넣는 게 요점 — 빈 mock은 호출되면 패닉하므로, 그 자체가 "이 경로는 그 포트를
     // 건드리지 않는다"는 검증이다. 편하다고 permissive한 mock을 넣으면 그 성질이 사라진다.
     fn router(health_store: MockHealthStore) -> axum::Router {
-        crate::routes::build(
-            Arc::new(AppState {
-                example_store: Arc::new(MockExampleStore::new()),
-                health_store: Arc::new(health_store),
-                job_run_store: Arc::new(MockJobRunStore::new()),
-            }),
-            std::time::Duration::from_secs(30),
-        )
+        super::routes().with_state(Arc::new(AppState {
+            store: Arc::new(MockStore::new()),
+            views: Arc::new(MockViews::new()),
+            health_store: Arc::new(health_store),
+            job_run_store: Arc::new(MockJobRunStore::new()),
+        }))
     }
 
-    // [테스트 시나리오] liveness가 어떤 의존성도 건드리지 않는지 확인한다. 두 포트 모두
+    // [테스트 시나리오] liveness가 어떤 의존성도 건드리지 않는지 확인한다. 모든 포트가
     // 빈 mock이므로, 이 경로가 저장소를 부르면 패닉하며 실패한다 — 즉 "의존성을 보지
     // 않는다"는 규칙이 테스트로 고정된다.
     #[tokio::test]
     async fn liveness_does_not_touch_any_dependency() {
         let response = router(MockHealthStore::new())
-            .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
@@ -92,7 +95,12 @@ mod tests {
             .returning(|| Err(AppError::Database(sqlx::Error::PoolClosed)));
 
         let response = router(store)
-            .oneshot(Request::builder().uri("/ready").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/ready")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 

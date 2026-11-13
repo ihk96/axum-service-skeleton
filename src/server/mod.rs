@@ -4,7 +4,7 @@
 // 그쪽도 같은 층위에 나란히 놓을 자리가 된다(consumer/).
 //
 // 라우터는 여기 없다. `/health`, `/ready`도 결국 HTTP 라우트이므로 다른 라우트와 함께
-// routes/ 아래에 있다 — "라우터 조립은 한 곳"이라는 원칙에 라우트의 성격에 따라 예외를
+// http/routes/ 아래에 있다 — "라우터 조립은 한 곳"이라는 원칙에 라우트의 성격에 따라 예외를
 // 두면서까지 깨뜨릴 이유가 없다.
 //
 // 이 코드가 bin이 아니라 lib에 있는 이유가 이 구조의 핵심이다. bin 크레이트에 있는 코드는
@@ -17,10 +17,11 @@ use std::{sync::Arc, time::Duration};
 
 use crate::{
     config::AppConfig,
-    jobs, routes,
+    http,
     scheduler::Scheduler,
     state::AppState,
     store::{self, PgStore},
+    usecase::jobs,
 };
 
 /// 서버를 기동하고, 종료 신호를 받아 정상 종료할 때까지 돌린다.
@@ -31,7 +32,17 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
     // 여기서 순서대로 실행해 스키마를 맞춘다 — 별도 마이그레이션 도구 없이 기동 자체가
     // 스키마를 동기화한다. 스키마를 바꾸는 권한은 이 부팅 경로에만 두므로, 풀을 공유하는
     // CLI는 이 단계를 거치지 않는다.
-    sqlx::migrate!().run(&db).await?;
+    //
+    // [핵심] `set_ignore_missing(true)` — "DB에는 적용돼 있는데 이 바이너리는 모르는" 마이그레이션이
+    // 있어도 기동한다. blue/green에서 신버전이 0003을 적용한 뒤 **구버전으로 롤백**하는 경우가
+    // 정확히 그 상황인데, 기본값(false)이면 구버전이 그 자리에서 기동을 거부해 롤백 자체가 막힌다.
+    //
+    // [주의] 이건 "기동은 시켜준다"까지다. 구버전 코드가 새 스키마에서 실제로 **동작**하는지는
+    // 마이그레이션을 쓰는 규칙이 보장해야 한다(docs/ARCHITECTURE.md의 "마이그레이션 규칙").
+    // 이미 적용된 마이그레이션 파일의 내용을 고친 경우(체크섬 불일치)는 여전히 기동 실패다.
+    let mut migrator = sqlx::migrate!();
+    migrator.set_ignore_missing(true);
+    migrator.run(&db).await?;
 
     // [아키텍처] 여기가 포트에 실제 구현(어댑터)을 꽂는 유일한 지점이다. "저장소가
     // Postgres다"를 아는 곳은 이 함수뿐이고, 그 아래 모든 코드는 trait만 본다.
@@ -44,31 +55,49 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
     let shutdown = shutdown::listen();
 
     // [아키텍처] 스케줄러는 여기서 **조립만** 한다. 넘기는 것은 job 목록이 아니라
-    // domain/jobs.rs의 등록 함수이고, job을 추가해도 이 줄은 그대로다.
+    // usecase/jobs.rs의 등록 함수이고, job을 추가해도 이 줄은 그대로다.
     //
     // 조립을 spawn보다 먼저 하는 이유는 크론식이 문자열이기 때문이다. 오타는 컴파일 타임에
     // 걸리지 않으므로 여기서 `?`로 기동을 실패시킨다 — 안 그러면 "배포는 됐는데 그 배치만
     // 조용히 안 도는" 상태가 되고, 그건 다음 발화 시각이 지나야 드러난다.
     let scheduler = Scheduler::build(&cfg, jobs::register)?;
 
-    // [설명] 백그라운드 태스크는 tokio::spawn으로 던지되 JoinHandle을 들고 있는다. 지금은
-    // 스케줄러 하나뿐이라 Vec일 이유가 없어 보이지만, 상시 루프 태스크(kafka 컨슈머 등)를
-    // 붙일 자리가 여기다 — 그때 추가되는 건 state.clone()과 토큰 clone을 넘기는 한 줄뿐이다.
-    // 태스크마다 필요한 포트를 골라 각각 clone할 일이 없다(그게 state를 통째로 넘기는 이유).
-    let tasks = vec![tokio::spawn(scheduler.run(state.clone(), shutdown.clone()))];
+    // [설명] 레이트 리밋 설정은 라우터와 정리 태스크가 **같은 것**을 봐야 하므로 여기서
+    // 한 번 만들어 둘에 나눠준다. 각자 만들면 버킷이 따로 놀아서, 정리 태스크가 비우는
+    // 맵과 실제로 판정에 쓰이는 맵이 달라진다.
+    let rate_limit = http::middleware::rate_limit::config(&cfg)?;
 
-    let app = routes::build(state, Duration::from_secs(cfg.request_timeout_secs));
+    // [설명] 백그라운드 태스크는 tokio::spawn으로 던지되 JoinHandle을 들고 있는다.
+    // 상시 루프 태스크(kafka 컨슈머 등)를 붙일 자리도 여기다 — 그때 추가되는 건
+    // state.clone()과 토큰 clone을 넘기는 한 줄뿐이다. 태스크마다 필요한 포트를 골라
+    // 각각 clone할 일이 없다(그게 state를 통째로 넘기는 이유).
+    let tasks = vec![
+        tokio::spawn(scheduler.run(state.clone(), shutdown.clone())),
+        tokio::spawn(http::middleware::rate_limit::prune(
+            rate_limit.clone(),
+            shutdown.clone(),
+        )),
+    ];
+
+    let app = http::build(state, &cfg, rate_limit)?;
 
     let listener = tokio::net::TcpListener::bind(&cfg.server_addr).await?;
     tracing::info!(addr = %cfg.server_addr, "listening");
     // [아키텍처] graceful shutdown — 토큰이 취소되면 새 연결은 받지 않되, 이미 진행 중인
     // 요청은 끝까지 처리한 뒤 이 await가 반환된다.
-    axum::serve(listener, app)
-        .with_graceful_shutdown({
-            let shutdown = shutdown.clone();
-            async move { shutdown.cancelled().await }
-        })
-        .await?;
+    // [핵심] `into_make_service_with_connect_info`가 요청마다 커넥션의 peer 주소를
+    // extension으로 실어준다. 레이트 리밋의 IP 추출기가 헤더(x-forwarded-for)를 먼저
+    // 보고 없으면 이 값으로 떨어지는데, 이게 없으면 **폴백이 아예 없어서** 헤더가 붙지
+    // 않은 요청이 전부 500이 된다(프록시를 거치지 않는 로컬 요청이 그렇다).
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown({
+        let shutdown = shutdown.clone();
+        async move { shutdown.cancelled().await }
+    })
+    .await?;
 
     // [설명] 여기 도달했다는 건 서버가 멈췄다는 뜻이지만, 그 이유가 항상 종료 신호는 아니다
     // (bind가 끊기는 등의 사정도 있다). 그러니 한 번 더 취소해 둔다 — 이미 취소된 토큰을

@@ -1,4 +1,4 @@
-// [아키텍처] 스케줄러가 자기 실행 기록을 자기가 청소하는 job. 이 job은 domain/jobs.rs에
+// [아키텍처] 스케줄러가 자기 실행 기록을 자기가 청소하는 job. 이 job은 usecase/jobs.rs에
 // 없다 — scheduled_job_runs는 스케줄러의 살림살이지 이 서비스의 업무가 아니기 때문이다.
 // 등록부에는 "이 서비스가 무엇을 언제 돌리는가"만 남아야 한다.
 //
@@ -46,9 +46,7 @@ fn prune_runs(retain: TimeDelta) -> impl Fn(Arc<AppState>) -> JobFuture + Send +
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{
-        example::MockExampleStore, health::MockHealthStore, job_run::MockJobRunStore,
-    };
+    use crate::store::{MockStore, MockViews, health::MockHealthStore, job_run::MockJobRunStore};
 
     // [테스트 시나리오] 보관 기간이 실제 cutoff로 옮겨지는지. 부호를 뒤집으면 "30일보다
     // 오래된 것"이 아니라 사실상 전부를 지우게 되는데, 그건 조용히 성공하는 종류의 사고다 —
@@ -67,7 +65,8 @@ mod tests {
             .return_once(|_| Ok(3));
 
         let state = Arc::new(AppState {
-            example_store: Arc::new(MockExampleStore::new()),
+            store: Arc::new(MockStore::new()),
+            views: Arc::new(MockViews::new()),
             health_store: Arc::new(MockHealthStore::new()),
             job_run_store: Arc::new(store),
         });

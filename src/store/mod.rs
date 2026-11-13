@@ -1,6 +1,7 @@
-// [아키텍처] 저장소 계층. 각 하위 모듈이 "내가 제공하는 것"을 trait(포트)으로 공개하고,
-// 그 trait의 Postgres 구현을 같은 파일에 함께 담는다 — domain/은 구현체가 아니라 trait에만
-// 의존한다.
+// [아키텍처] 저장소 계층. 도메인 영역마다 하위 모듈을 두고, 그 안을 두 축으로 나눈다.
+//   - store(`XxxStore`): 제어(쓰기)와 그에 딸린 검증 조회. 트랜잭션에 참여할 수 있다.
+//   - views(`XxxViews`): 화면/응답용 조회 전용. 트랜잭션에 참여하지 않고 항상 풀을 쓴다.
+// 바깥(usecase/http)은 이 둘을 entry.rs의 진입점(`Store`, `Views`)을 통해 꺼내 쓴다.
 //
 // trait의 모양을 정하는 기준은 **테이블이 아니라 쓰임새**다. 소비자가 한 번의 작업에
 // 필요로 하는 단위로 메서드를 만들 것. 쿼리 단위로 잘게 쪼개면 재사용은 좋아 보이지만,
@@ -13,13 +14,23 @@ pub mod example;
 pub mod health;
 pub mod job_run;
 
-use std::time::Duration;
+mod entry;
+pub use entry::*;
 
-use sqlx::{postgres::PgPoolOptions, Executor, PgPool};
+use std::{
+    ops::{Deref, DerefMut},
+    sync::Arc,
+    time::Duration,
+};
 
-use crate::config::AppConfig;
+use sqlx::{
+    Executor, PgConnection, PgPool, Postgres, Transaction, pool::PoolConnection,
+    postgres::PgPoolOptions,
+};
+use tokio::sync::{MappedMutexGuard, Mutex, MutexGuard};
 
-pub use example::{ExampleRecord, ExampleStore};
+use crate::{config::AppConfig, error::AppError};
+
 pub use health::HealthStore;
 pub use job_run::JobRunStore;
 
@@ -36,7 +47,10 @@ pub use job_run::JobRunStore;
 // 마이그레이션은 의도적으로 여기서 실행하지 않는다. 스키마를 바꾸는 건 서버 부팅 경로
 // (server::run)의 책임이고, 운영자가 돌린 CLI가 조용히 스키마를 변경하면 놀라운 동작이 된다.
 pub async fn pg_pool(cfg: &AppConfig) -> Result<PgPool, sqlx::Error> {
-    let statement_timeout = format!("SET statement_timeout = '{}s'", cfg.db_statement_timeout_secs);
+    let statement_timeout = format!(
+        "SET statement_timeout = '{}s'",
+        cfg.db_statement_timeout_secs
+    );
 
     PgPoolOptions::new()
         .max_connections(cfg.db_max_connections)
@@ -59,13 +73,70 @@ pub async fn pg_pool(cfg: &AppConfig) -> Result<PgPool, sqlx::Error> {
 // [설명] trait은 영역별로 나눠져 있지만 구현체는 하나다 — 커넥션 풀이 하나뿐이고, 영역이
 // 달라도 같은 트랜잭션 경계/설정을 공유하기 때문. 소비자 입장에서는 여전히 자기 영역의
 // trait 하나만 보이므로, 구현이 뭉쳐 있다는 사실이 위로 새어나가지 않는다.
+//
+// [아키텍처] 같은 구조체가 `tx`가 None이면 풀로, Some이면 그 트랜잭션으로 쿼리를 보낸다
+// (트랜잭션 모드는 entry.rs의 `Store::begin`이 만든다). 그래서 store 구현은 `self.conn()`만
+// 쓰면 되고 트랜잭션용 SQL을 따로 둘 필요가 없다. views 구현은 `&self.pool`을 직접 쓴다.
+//
+// store 구현을 쓸 때 지킬 규칙:
+//   1. 쿼리는 `&mut *self.conn().await?`로 보낸다. `&self.pool`로 보내면 트랜잭션 안에서
+//      불려도 트랜잭션 밖으로 나가 버린다.
+//   2. 메서드 안에서 여러 쿼리를 원자적으로 묶어야 하면 `self.pool.begin()`이 아니라
+//      `sqlx::Connection::begin(&mut *conn)`을 쓴다. 트랜잭션 모드에서는 SAVEPOINT가 된다.
+//   3. `conn`을 쥔 채로 `self`의 다른 메서드를 부르지 않는다. 트랜잭션 모드에서는 Mutex라
+//      재진입하면 교착된다 — 먼저 drop할 것.
+//
+// [주의] Postgres는 트랜잭션 안에서 쿼리 하나가 실패하면 그 트랜잭션의 이후 쿼리를 **전부**
+// 거부한다(`current transaction is aborted`). unique 위반을 잡아 재시도하는 식의 코드를
+// 트랜잭션 안에서 돌리려면, 실패할 수 있는 쿼리를 규칙 2의 SAVEPOINT로 감싸거나
+// `ON CONFLICT`로 에러 자체가 나지 않게 쓴다.
+#[derive(Clone)]
 pub struct PgStore {
     pub(crate) pool: PgPool,
+    // 한 트랜잭션에서 꺼낸 여러 store가 같은 트랜잭션을 공유하도록 Arc로 들고, store trait이
+    // `&self`라서 Mutex로 감쌌다. commit하면 Option이 비워져 이후 쿼리는 에러가 된다.
+    pub(crate) tx: Option<Arc<Mutex<Option<Transaction<'static, Postgres>>>>>,
 }
 
 impl PgStore {
     // PgPool 자체가 내부적으로 Arc라 clone이 저렴하므로, 소유권을 받아 들고 있어도 부담이 없다.
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self { pool, tx: None }
+    }
+
+    /// 쿼리를 보낼 커넥션. 트랜잭션 모드면 그 트랜잭션을, 아니면 풀 커넥션을 준다.
+    pub(crate) async fn conn(&self) -> Result<Conn<'_>, AppError> {
+        Ok(match &self.tx {
+            Some(tx) => Conn::Tx(
+                MutexGuard::try_map(tx.lock().await, |t| t.as_mut()).map_err(|_| {
+                    AppError::Internal(anyhow::anyhow!("transaction already finished"))
+                })?,
+            ),
+            None => Conn::Pool(self.pool.acquire().await?),
+        })
+    }
+}
+
+pub(crate) enum Conn<'a> {
+    Pool(PoolConnection<Postgres>),
+    Tx(MappedMutexGuard<'a, Transaction<'static, Postgres>>),
+}
+
+impl Deref for Conn<'_> {
+    type Target = PgConnection;
+    fn deref(&self) -> &PgConnection {
+        match self {
+            Conn::Pool(c) => c,
+            Conn::Tx(t) => t,
+        }
+    }
+}
+
+impl DerefMut for Conn<'_> {
+    fn deref_mut(&mut self) -> &mut PgConnection {
+        match self {
+            Conn::Pool(c) => c,
+            Conn::Tx(t) => t,
+        }
     }
 }
