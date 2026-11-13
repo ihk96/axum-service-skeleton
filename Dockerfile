@@ -58,12 +58,15 @@ COPY migrations ./migrations
 # 터지므로, 마이그레이션을 추가했다면 쿼리를 안 고쳤더라도 prepare를 다시 돌릴 것.
 COPY .sqlx ./.sqlx
 
-# 위 더미 빌드의 산출물을 지우고 진짜 빌드를 한다. 더미와 실제 소스의 크레이트
-# 이름이 같아서, 지우지 않으면 Cargo가 이미 빌드된 것으로 착각해 빈 main()이 든
-# 바이너리가 그대로 최종 이미지에 실릴 수 있다. 캐시 레이어 트릭의 유일한 함정.
-RUN rm -f target/release/server \
-    && rm -f target/release/deps/server-* \
-    && rm -f target/release/deps/*axum_service_skeleton* \
+# 진짜 빌드. 캐시 레이어 트릭의 유일한 함정이 여기 있다 — Cargo는 소스 파일의 **수정 시각**을
+# 보고 다시 빌드할지 정하는데, COPY는 빌드 컨텍스트의 수정 시각을 그대로 가져온다. 그래서 우리
+# 소스가 방금 만든 더미 산출물보다 "오래된" 것으로 보이면, Cargo가 이미 빌드된 것으로 착각해
+# 빈 main()이 든 바이너리가 그대로 최종 이미지에 실린다.
+#
+# [설계] 그래서 산출물을 지우는 대신 소스를 전부 touch해 확실히 새것으로 만든다. 산출물을
+# 지우려면 크레이트/bin 이름을 알아야 하지만(target/release/deps/<크레이트 이름>-*), 이 방식은
+# 이름을 몰라도 되므로 프로젝트 이름을 바꾸거나 bin을 추가해도 이 줄은 그대로다.
+RUN find src -name '*.rs' -exec touch {} + \
     && cargo build --release
 
 # ---------------------------------------------------------------------------
@@ -118,9 +121,14 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 EXPOSE 8080
 
-# bin/server.rs의 EnvFilter::from_default_env()는 RUST_LOG가 비어 있으면 사실상
-# 아무것도 출력하지 않는다. 컨테이너에서는 기본값을 박아둔다.
-ENV RUST_LOG=info
+# [설명] 설정은 이미지에 박지 않고, 컨테이너가 뜰 때 마운트되는 /app/.env를 앱이 직접
+# 읽는다(bin/server.rs). 그래서 작업 디렉토리를 그 자리로 맞춰 둔다 — 앱은 "작업 디렉토리의
+# .env"를 찾으므로 로컬 `cargo run`과 컨테이너가 같은 규칙으로 돈다.
+#
+# [주의] 여기에 ENV를 늘리지 말 것. dotenvy는 이미 있는 환경변수를 덮어쓰지 않으므로, 이미지
+# ENV로 박은 값은 .env로 바꿀 수 없게 된다(RUST_LOG 기본값을 코드로 옮긴 이유). 예외는
+# 앱보다 먼저 도는 entrypoint가 써야 하는 위의 DATA_DIR뿐이다.
+WORKDIR /app
 
 # [설명] ENTRYPOINT는 권한 정리 스크립트이고, 실제로 무엇을 실행할지는 여전히 CMD가
 # 정한다. 스크립트가 마지막에 `exec "$@"`로 CMD를 그대로 실행하므로, `docker run

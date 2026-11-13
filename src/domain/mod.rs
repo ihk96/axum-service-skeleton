@@ -1,17 +1,10 @@
-// [아키텍처] 이 서비스만의 로직이 모여 있는 곳. 폴더를 가른 기준은 **다른 프로젝트로
-// 옮겼을 때 내용이 그대로인가**다. 그대로인 것(config, error, state, server, store의 골격)은
-// 밖에 있고, 이 서비스에서만 의미가 있는 것은 전부 여기 있다. 그래서 기능이 늘어날 때
-// 커지는 폴더는 여기 하나여야 한다.
+// [아키텍처] 이 서비스만의 규칙이 모여 있는 곳. 저장소도 HTTP도 모르는 순수한 코드만 둔다 —
+// 값 검증·정규화, 상태 전이 규칙, 계산 같은 것들. 입력을 받아 판단하고 결과를 돌려줄 뿐이라
+// 테스트에 mock조차 필요 없다.
 //
-// 이 계층은 HTTP도 SQL도 모른다. 각 모듈은 필요한 저장소를 `&dyn XStore` 포트로 받고,
-// 그 포트를 누가 구현했는지는 신경 쓰지 않는다 — 덕분에 테스트가 mock만으로 돌고,
-// 호출부는 routes/(HTTP)든 bin/(CLI)든 백그라운드 태스크든 상관없다.
+// 저장소를 불러야 하는 순간 그 코드는 usecase/의 몫이다. 이 경계를 지키면 규칙이 어느
+// 입구(HTTP/CLI/스케줄 job)에서든 같은 모양으로 재사용되고, 규칙만 따로 빠르게 테스트된다.
 //
-// 스켈레톤을 복사한 뒤 지울 것은 아래 example 파일들과 그에 딸린 store/example.rs,
-// routes/example.rs, migrations/0001_init.sql이다.
+// 스켈레톤을 복사한 뒤 지울 것은 아래 example과 그에 딸린 usecase/example*.rs,
+// store/example/, http/routes/example.rs, migrations/0001_init.sql이다.
 pub mod example;
-pub mod example_job;
-
-// 스케줄 job 등록부. 예제가 아니라 이 서비스의 배치 목록이므로 파일 자체는 남기고
-// 안의 예제 항목만 지운다.
-pub mod jobs;
